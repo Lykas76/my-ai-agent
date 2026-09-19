@@ -203,6 +203,13 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Local assistant data and private environment variants
+data/
+*.sqlite3
+*.sqlite3-*
+.env.*
+!.env.example
+
 # Ruff stuff:
 .ruff_cache/
 
