@@ -1,3 +1,5 @@
+import heapq
+from memory.search import MemoryEntry, tokens
 import sqlite3
 from pathlib import Path
 
@@ -28,6 +30,28 @@ class SQLiteMemory:
     def delete(self, key: str) -> bool:
         with self._connection:
             return self._connection.execute("DELETE FROM memory WHERE key=?", (key,)).rowcount > 0
+
+    def search(self, query: str, limit: int = 5) -> list[MemoryEntry]:
+        if not isinstance(query, str) or len(query) > 4000:
+            raise ValueError("Query must be text of at most 4000 characters")
+        if type(limit) is not int or not 1 <= limit <= 10:
+            raise ValueError("Search limit must be between 1 and 10")
+        terms = tokens(query)
+        if not terms:
+            return []
+
+        def candidates():
+            cursor = self._connection.execute("SELECT key, value FROM memory")
+            try:
+                for key, value in cursor:
+                    score = 2 * len(terms & tokens(key)) + len(terms & tokens(value))
+                    if score:
+                        yield (-score, key, value)
+            finally:
+                cursor.close()
+
+        # Keep only the best N rows; ties are ordered by key for repeatability.
+        return [MemoryEntry(key, value) for _, key, value in heapq.nsmallest(limit, candidates())]
 
     def close(self) -> None:
         self._connection.close()

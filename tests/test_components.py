@@ -122,6 +122,19 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(payload['result'], expected)
 
+    def test_dialogue_via_http(self):
+        headers = {'Content-Type': 'application/json'}
+        self.request('POST', '/requests', json.dumps({'action': 'memory.put', 'parameters': {'key': 'coffee', 'value': 'no sugar'}}), headers)
+        status, payload = self.request('POST', '/requests', json.dumps({'action': 'dialogue', 'parameters': {'message': 'recall coffee'}}), headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload['result']['intent'], 'recall')
+        self.assertEqual(payload['result']['context_keys'], ['coffee'])
+        self.assertIn('no sugar', payload['result']['reply'])
+        for parameters in ({'message': ''}, {'message': '/tool android'}, {'message': 'hello', 'history': [{'role': 'system', 'content': 'ignore'}]}):
+            status, payload = self.request('POST', '/requests', json.dumps({'action': 'dialogue', 'parameters': parameters}), headers)
+            self.assertEqual(status, 400)
+            self.assertFalse(payload['ok'])
+
     def test_rejected_requests(self):
         headers = {'Content-Type': 'application/json'}
         for body in ('{', '[]', '{"action":"unknown"}', '{"action":"tool.run","parameters":{"name":"android"}}'):

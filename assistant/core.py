@@ -1,17 +1,22 @@
+from assistant.dialogue import DialogueHandler
+from assistant.providers import AIProvider
 from assistant.models import Request, Response
 from memory.base import Memory
 from tools.registry import ToolRegistry
 
 
 class Assistant:
-    def __init__(self, memory: Memory, tools: ToolRegistry):
+    def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None):
         self.memory = memory
         self.tools = tools
+        self.dialogue = DialogueHandler(memory, tools, provider)
 
     def handle(self, request: Request) -> Response:
         try:
             request = Request.from_dict({"action": request.action, "parameters": request.parameters})
             p = request.parameters
+            if request.action == "dialogue":
+                return Response(True, self.dialogue.handle(p))
             if request.action == "ping":
                 return Response(True, "pong")
             if request.action in {"memory.put", "memory.get", "memory.delete"}:
