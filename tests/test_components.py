@@ -13,6 +13,7 @@ from api.server import make_handler
 from config import Settings
 from memory.sqlite import SQLiteMemory
 from tools.registry import Tool, ToolDenied, ToolRegistry
+from security.store import AccessContext
 
 
 class MemoryTests(unittest.TestCase):
@@ -36,7 +37,10 @@ class CoreTests(unittest.TestCase):
         self.memory = SQLiteMemory(':memory:')
         self.addCleanup(self.memory.close)
         self.registry = ToolRegistry()
-        self.core = Assistant(self.memory, self.registry)
+        user = self.memory.security.create_user()
+        self.access = AccessContext(user.user_id, self.memory.security)
+        self.memory.security.grant(user.user_id, 'echo', 'read')
+        self.core = Assistant(self.memory, self.registry, access=self.access)
 
     def test_routes(self):
         self.assertEqual(self.core.handle(Request('ping')).result, 'pong')
@@ -53,7 +57,7 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(ToolDenied):
                 self.registry.execute(name, {})
         self.assertEqual(called, [])
-        self.registry.register(Tool('echo', lambda p: p['text']), enabled=True)
+        self.registry.register(Tool('echo', lambda p: p['text'], permission='read'), enabled=True)
         self.assertEqual(self.core.handle(Request('tool.run', {'name': 'echo', 'arguments': {'text': 'hello'}})).result, 'hello')
         self.assertFalse(self.core.handle(Request('tool.run', {'name': 'disabled', 'enabled': True})).ok)
         with self.assertRaises(ValueError):
@@ -79,6 +83,8 @@ class ApiTests(unittest.TestCase):
         def run():
             try:
                 with SQLiteMemory(':memory:') as memory:
+                    user = memory.security.create_user()
+                    self.token = memory.security.issue_token(user.user_id).token
                     with HTTPServer(('127.0.0.1', 0), make_handler(Assistant(memory, ToolRegistry()))) as server:
                         self.server = server
                         self.ready.set()
@@ -101,7 +107,8 @@ class ApiTests(unittest.TestCase):
     def request(self, method, path, body=None, headers=None):
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
         try:
-            connection.request(method, path, body, headers or {})
+            headers = {'Authorization': 'Bearer ' + self.token, **(headers or {})}
+            connection.request(method, path, body, headers)
             response = connection.getresponse()
             return response.status, json.loads(response.read())
         finally:
@@ -132,13 +139,13 @@ class ApiTests(unittest.TestCase):
         self.assertIn('no sugar', payload['result']['reply'])
         for parameters in ({'message': ''}, {'message': '/tool android'}, {'message': 'hello', 'history': [{'role': 'system', 'content': 'ignore'}]}):
             status, payload = self.request('POST', '/requests', json.dumps({'action': 'dialogue', 'parameters': parameters}), headers)
-            self.assertEqual(status, 400)
+            self.assertEqual(status, 403 if parameters.get('message') == '/tool android' else 400)
             self.assertFalse(payload['ok'])
 
     def test_rejected_requests(self):
         headers = {'Content-Type': 'application/json'}
         for body in ('{', '[]', '{"action":"unknown"}', '{"action":"tool.run","parameters":{"name":"android"}}'):
-            self.assertEqual(self.request('POST', '/requests', body, headers)[0], 400)
+            self.assertEqual(self.request('POST', '/requests', body, headers)[0], 403 if 'tool.run' in body else 400)
         self.assertEqual(self.request('POST', '/requests', '{}')[0], 415)
         self.assertEqual(self.request('POST', '/requests', '{}', {**headers, 'Origin': 'https://example.com'})[0], 403)
         self.assertEqual(self.request('POST', '/requests', '{}', {**headers, 'Content-Length': '65537'})[0], 413)

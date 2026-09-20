@@ -4,20 +4,40 @@ from assistant.dialogue import DialogueHandler
 from assistant.providers import AIProvider
 from assistant.models import Request, Response
 from memory.base import Memory
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, ConfirmationRequired
+from security.store import AccessContext, AuthenticationError, IdentityError, User
 
 
 class Assistant:
     def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None,
-                 *, sessions: SessionStore | None = None, history_policy: HistoryPolicy | None = None):
+                 *, sessions: SessionStore | None = None, history_policy: HistoryPolicy | None = None,
+                 access: AccessContext | None = None):
         self.memory = memory
         self.tools = tools
-        self.dialogue = DialogueHandler(memory, tools, provider, sessions=sessions, history_policy=history_policy)
+        self.access = access
+        self.security = getattr(memory, "security", None)
+        self.dialogue = DialogueHandler(memory, tools, provider, sessions=sessions, history_policy=history_policy, access=access)
+
+    def for_user(self, user: User):
+        # HTTP constructs a fresh binding per request, never mutates shared identity.
+        if self.security is None or not hasattr(self.memory, "for_user"):
+            raise AuthenticationError()
+        return Assistant(self.memory.for_user(user.user_id), self.tools, self.dialogue.provider,
+                         sessions=self.dialogue.sessions, history_policy=self.dialogue.history_policy,
+                         access=AccessContext(user.user_id, self.security))
 
     def handle(self, request: Request) -> Response:
         try:
             request = Request.from_dict({"action": request.action, "parameters": request.parameters})
             p = request.parameters
+            if self.access is not None:
+                user = self.access.store.get_user(self.access.user_id)
+                if user is None or user.status != "active":
+                    raise AuthenticationError()
+                if "user_id" in p and p["user_id"] != self.access.user_id:
+                    raise IdentityError()
+                if request.action == "dialogue":
+                    p = {**p, "user_id": self.access.user_id}
             if request.action == "dialogue":
                 return Response(True, self.dialogue.handle(p))
             if request.action == "ping":
@@ -35,8 +55,10 @@ class Assistant:
                 arguments = p.get("arguments", {})
                 if not isinstance(arguments, dict):
                     raise ValueError("arguments must be an object")
-                return Response(True, self.tools.execute(name, arguments))
+                return Response(True, self.tools.execute(name, arguments, access=self.access))
             return Response(False, error="Unknown action")
+        except ConfirmationRequired as exc:
+            return Response(True, {"status": "confirmation_required", "tool": exc.tool, "permission": "sensitive"})
         except ValueError as exc:
             return Response(False, error=str(exc))
 

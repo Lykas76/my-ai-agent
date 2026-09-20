@@ -13,6 +13,7 @@ from config import Settings
 from memory.sessions import SessionError, StoredMessage
 from memory.sqlite import SQLiteMemory
 from tools.registry import Tool, ToolRegistry
+from security.store import AccessContext
 
 
 class RecordingProvider:
@@ -116,7 +117,10 @@ class SessionTests(unittest.TestCase):
         def echo(arguments):
             calls.append(arguments)
             return 'coffee'
-        self.registry.register(Tool('echo', echo), enabled=True)
+        user = self.memory.security.create_user('alice')
+        self.memory.security.grant(user.user_id, 'echo', 'read')
+        self.core = Assistant(self.memory, self.registry, self.provider, access=AccessContext(user.user_id, self.memory.security))
+        self.registry.register(Tool('echo', echo, permission='read'), enabled=True)
         sid = self.new_session(message='/tool echo {}')
         self.turn('coffee', session_id=sid)
         self.assertEqual(calls, [{}])

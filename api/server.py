@@ -1,4 +1,6 @@
 import json
+import socket
+import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -7,6 +9,7 @@ from assistant.models import Request
 from config import Settings
 from memory.sqlite import SQLiteMemory
 from tools.registry import ToolRegistry
+from security.store import AuthenticationError
 
 MAX_BODY = 65536
 
@@ -17,6 +20,25 @@ def make_handler(assistant: Assistant):
             super().setup()
             self.connection.settimeout(5)
 
+        def finish(self):
+            # Early denials can leave body bytes unread. Send FIN before the final
+            # close, then drain a bounded amount to avoid resetting the response on Windows.
+            try:
+                self.wfile.flush()
+                self.connection.shutdown(socket.SHUT_WR)
+                deadline = time.monotonic() + 0.1
+                remaining = MAX_BODY
+                while remaining > 0 and time.monotonic() < deadline:
+                    self.connection.settimeout(max(0.001, deadline - time.monotonic()))
+                    chunk = self.connection.recv(min(8192, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                pass
+            finally:
+                super().finish()
+
         def log_message(self, format, *args):
             pass  # Do not log request contents or personal memory.
 
@@ -25,6 +47,9 @@ def make_handler(assistant: Assistant):
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            if status == 401:
+                self.send_header("WWW-Authenticate", "Bearer")
             self.end_headers()
             self.wfile.write(body)
 
@@ -38,7 +63,21 @@ def make_handler(assistant: Assistant):
             if self.path != "/requests":
                 self.reply(404, {"error": "Not found"})
                 return
-            # Reject browser-originated requests; this API has no remote authentication.
+            try:
+                headers = self.headers.get_all("Authorization", [])
+                if len(headers) != 1:
+                    raise AuthenticationError()
+                parts = headers[0].split()
+                if len(parts) != 2 or parts[0].casefold() != "bearer" or assistant.security is None:
+                    raise AuthenticationError()
+                user = assistant.security.authenticate(parts[1])
+            except AuthenticationError:
+                self.reply(401, {"error": "Unauthorized"})
+                return
+            except Exception:
+                self.reply(503, {"error": "Authentication unavailable"})
+                return
+            # Local clients only; browser-originated requests remain blocked.
             if self.headers.get("Origin") is not None:
                 self.reply(403, {"error": "Browser origins are not allowed"})
                 return
@@ -54,14 +93,18 @@ def make_handler(assistant: Assistant):
                     return
                 payload = json.loads(self.rfile.read(length))
                 request = Request.from_dict(payload)
-                if request.action == "dialogue":
-                    request = Request(request.action, {"user_id": "local", **request.parameters})
             except (ValueError, UnicodeError, OSError):
                 self.reply(400, {"error": "Invalid request body"})
                 return
             try:
-                response = assistant.handle(request)
-                self.reply(200 if response.ok else 400, asdict(response))
+                if "user_id" in request.parameters and request.parameters["user_id"] != user.user_id:
+                    self.reply(403, {"error": "Forbidden identity"})
+                    return
+                response = assistant.for_user(user).handle(request)
+                status = 200 if response.ok else {
+                    "Unauthorized": 401, "Forbidden identity": 403, "Tool execution denied": 403
+                }.get(response.error, 400)
+                self.reply(status, asdict(response))
             except Exception:
                 self.reply(500, {"error": "Internal error"})
 

@@ -7,7 +7,8 @@ from assistant.providers import AIProvider, LocalProvider, Message, ProviderRequ
 from memory.base import Memory
 from memory.sessions import SessionError, SessionStore, StoredMessage, validate_id
 from memory.search import MemoryEntry, SearchableMemory
-from tools.registry import ToolDenied, ToolRegistry
+from tools.registry import ConfirmationRequired, ToolDenied, ToolRegistry
+from security.store import AccessContext
 
 MAX_MESSAGE = 4000
 MAX_HISTORY = 20
@@ -31,9 +32,11 @@ class DialogueResponse:
 
 class DialogueHandler:
     def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None,
-                 *, sessions: SessionStore | None = None, history_policy: HistoryPolicy | None = None):
+                 *, sessions: SessionStore | None = None, history_policy: HistoryPolicy | None = None,
+                 access: AccessContext | None = None):
         self.memory = memory
         self.tools = tools
+        self.access = access
         self.provider = provider if provider is not None else LocalProvider()
         self.detector = IntentDetector()
         self.sessions = sessions if sessions is not None else getattr(memory, "sessions", None)
@@ -81,11 +84,11 @@ class DialogueHandler:
         if decision.tool_call is not None:
             call = decision.tool_call
             try:
-                value = self.tools.execute(call.name, call.arguments)
+                value = self.tools.execute(call.name, call.arguments, access=self.access)
                 if not isinstance(value, str):
                     raise TypeError("Tool must return text")
                 result = ToolResult(call.name, value[:MAX_TOOL_RESULT])
-            except ToolDenied:
+            except (ToolDenied, ConfirmationRequired):
                 raise
             except Exception as exc:
                 raise DialogueError("Tool execution failed; it may have produced side effects. Do not retry automatically.") from exc

@@ -1,6 +1,8 @@
 import heapq
 from memory.search import MemoryEntry, tokens
 from memory.sessions import SQLiteSessionStore
+from memory.scoped import UserMemory
+from security.store import SecurityStore
 import sqlite3
 from pathlib import Path
 
@@ -17,6 +19,8 @@ class SQLiteMemory:
         )
         self._connection.commit()
         self.sessions = SQLiteSessionStore(self._connection)
+        self.security = SecurityStore(self._connection)
+        UserMemory.initialize(self._connection)
 
     def put(self, key: str, value: str) -> None:
         with self._connection:
@@ -54,6 +58,9 @@ class SQLiteMemory:
 
         # Keep only the best N rows; ties are ordered by key for repeatability.
         return [MemoryEntry(key, value) for _, key, value in heapq.nsmallest(limit, candidates())]
+
+    def for_user(self, user_id: str) -> UserMemory:
+        return UserMemory(self, user_id)
 
     def close(self) -> None:
         self._connection.close()

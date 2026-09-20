@@ -22,6 +22,10 @@ class SessionApiTests(unittest.TestCase):
         def run():
             try:
                 with SQLiteMemory(':memory:') as memory:
+                    self.tokens = {}
+                    for name in ('local', 'alice', 'bob'):
+                        memory.security.create_user(name)
+                        self.tokens[name] = memory.security.issue_token(name).token
                     core = Assistant(memory, ToolRegistry(), HistoryEchoProvider())
                     with HTTPServer(('127.0.0.1', 0), make_handler(core)) as server:
                         self.server = server
@@ -45,7 +49,9 @@ class SessionApiTests(unittest.TestCase):
     def request(self, payload):
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
         try:
-            connection.request('POST', '/requests', json.dumps(payload), {'Content-Type': 'application/json'})
+            user_id = payload.get('user_id', payload.get('parameters', {}).get('user_id', 'local'))
+            token = self.tokens.get(user_id, self.tokens['local'])
+            connection.request('POST', '/requests', json.dumps(payload), {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
             response = connection.getresponse()
             return response.status, json.loads(response.read())
         finally:
@@ -80,7 +86,7 @@ class SessionApiTests(unittest.TestCase):
 
     def test_invalid_and_duplicate_ids_have_safe_errors(self):
         for payload in (
-            {'action': 'dialogue', 'user_id': None, 'parameters': {'message': 'x'}},
+            {'action': 'dialogue', 'session_id': None, 'parameters': {'message': 'x'}},
             {'action': 'dialogue', 'session_id': '', 'parameters': {'message': 'x'}},
             {'action': 'dialogue', 'user_id': 'a', 'parameters': {'user_id': 'b', 'message': 'x'}},
             {'action': 'ping', 'user_id': 'a'},
