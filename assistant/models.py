@@ -20,8 +20,8 @@ class Request:
                 if name in parameters:
                     raise ValueError(f"Duplicate {name}")
                 parameters[name] = payload[name]
-        if action != "dialogue" and any(name in parameters for name in ("user_id", "session_id")):
-            raise ValueError("Session identifiers are supported only for dialogue")
+        if action not in ("dialogue", "tool.run") and any(name in parameters for name in ("user_id", "session_id")):
+            raise ValueError("Session identifiers are supported only for dialogue and tool.run")
         return cls(action, parameters)
 
 

@@ -102,7 +102,7 @@ def make_handler(assistant: Assistant):
                     return
                 response = assistant.for_user(user).handle(request)
                 status = 200 if response.ok else {
-                    "Unauthorized": 401, "Forbidden identity": 403, "Tool execution denied": 403
+                    "Unauthorized": 401, "Forbidden identity": 403, "Tool execution denied": 403, "Confirmation rejected": 403
                 }.get(response.error, 400)
                 self.reply(status, asdict(response))
             except Exception:
@@ -114,7 +114,7 @@ def make_handler(assistant: Assistant):
 def main():
     settings = Settings.from_env()
     with SQLiteMemory(settings.database_path) as memory:
-        assistant = Assistant(memory, ToolRegistry(), history_policy=settings.history_policy)
+        assistant = Assistant(memory, ToolRegistry(confirmation_ttl_seconds=settings.confirmation_ttl_seconds), history_policy=settings.history_policy)
         with HTTPServer(("127.0.0.1", settings.port), make_handler(assistant)) as server:
             print(f"Local API: http://127.0.0.1:{settings.port}")
             try:

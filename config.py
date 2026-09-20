@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from assistant.history import HistoryPolicy
+from security.confirmations import DEFAULT_TTL, validate_ttl
 
 try:
     from dotenv import load_dotenv
@@ -19,6 +20,7 @@ class Settings:
     database_path: str = "data/assistant.sqlite3"
     port: int = 8000
     history_policy: HistoryPolicy = HistoryPolicy()
+    confirmation_ttl_seconds: int = DEFAULT_TTL
 
     @classmethod
     def from_env(cls):
@@ -30,4 +32,5 @@ class Settings:
             max_chars=int(os.getenv("ASSISTANT_HISTORY_MAX_CHARS") or "8000"),
             candidate_messages=int(os.getenv("ASSISTANT_HISTORY_CANDIDATES") or "100"),
         )
-        return cls(os.getenv("ASSISTANT_DB_PATH") or "data/assistant.sqlite3", port, policy)
+        ttl = validate_ttl(int(os.getenv("ASSISTANT_CONFIRMATION_TTL_SECONDS") or str(DEFAULT_TTL)))
+        return cls(os.getenv("ASSISTANT_DB_PATH") or "data/assistant.sqlite3", port, policy, ttl)

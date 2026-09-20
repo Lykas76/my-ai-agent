@@ -9,6 +9,7 @@ from memory.sessions import SessionError, SessionStore, StoredMessage, validate_
 from memory.search import MemoryEntry, SearchableMemory
 from tools.registry import ConfirmationRequired, ToolDenied, ToolRegistry
 from security.store import AccessContext
+from security.confirmations import ConfirmationRejected
 
 MAX_MESSAGE = 4000
 MAX_HISTORY = 20
@@ -43,11 +44,13 @@ class DialogueHandler:
         self.history_policy = history_policy if history_policy is not None else HistoryPolicy()
 
     def handle(self, parameters: dict) -> dict:
-        if not isinstance(parameters, dict) or set(parameters) - {"message", "history", "user_id", "session_id"}:
+        if not isinstance(parameters, dict) or set(parameters) - {"message", "history", "user_id", "session_id", "confirmation_id"}:
             raise ValueError("Expected message, optional history, user_id and session_id")
         message = self._text(parameters.get("message"))
         history = self._history(parameters.get("history", []))
         decision = self.detector.detect(message)
+        if "confirmation_id" in parameters and (not isinstance(parameters["confirmation_id"], str) or decision.tool_call is None):
+            raise ConfirmationRejected()
         persistent = "user_id" in parameters or "session_id" in parameters
         user_id = session_id = None
         if persistent:
@@ -84,11 +87,13 @@ class DialogueHandler:
         if decision.tool_call is not None:
             call = decision.tool_call
             try:
-                value = self.tools.execute(call.name, call.arguments, access=self.access)
+                value = self.tools.execute(call.name, call.arguments, access=self.access,
+                                           confirmation_id=parameters.get("confirmation_id"), session_id=session_id,
+                                           new_session=persistent and session_id is None)
                 if not isinstance(value, str):
                     raise TypeError("Tool must return text")
                 result = ToolResult(call.name, value[:MAX_TOOL_RESULT])
-            except (ToolDenied, ConfirmationRequired):
+            except (ToolDenied, ConfirmationRequired, ConfirmationRejected):
                 raise
             except Exception as exc:
                 raise DialogueError("Tool execution failed; it may have produced side effects. Do not retry automatically.") from exc

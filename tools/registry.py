@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from typing import Callable
+import json
+from security.confirmations import ConfirmationRejected, DEFAULT_TTL, canonical_arguments, validate_schema, validate_ttl
 
 from security.store import AccessContext, PERMISSIONS, validate_tool_name
 
@@ -9,8 +11,9 @@ class ToolDenied(ValueError):
 
 
 class ConfirmationRequired(ValueError):
-    def __init__(self, tool: str):
-        self.tool = tool
+    def __init__(self, confirmation: dict):
+        self.confirmation = confirmation
+        self.tool = confirmation["tool"]
         super().__init__("Confirmation required")
 
 
@@ -20,12 +23,14 @@ class Tool:
     handler: Callable[[dict], str]
     description: str = ""
     permission: str | None = None
+    confirmation_schema: dict | None = None
 
 
 class ToolRegistry:
     """Default deny; registration, enablement and exact user grant are all required."""
 
-    def __init__(self):
+    def __init__(self, *, confirmation_ttl_seconds: int = DEFAULT_TTL):
+        self.confirmation_ttl_seconds = validate_ttl(confirmation_ttl_seconds)
         self._tools: dict[str, Tool] = {}
         self._enabled: set[str] = set()
 
@@ -37,7 +42,8 @@ class ToolRegistry:
         if enabled:
             self._enabled.add(tool.name)
 
-    def execute(self, name: str, arguments: dict, *, access: AccessContext | None = None) -> str:
+    def execute(self, name: str, arguments: dict, *, access: AccessContext | None = None,
+                confirmation_id: str | None = None, session_id: str | None = None, new_session: bool = False) -> str:
         tool = self._tools.get(name)
         permission = tool.permission if tool and isinstance(tool.permission, str) and tool.permission in PERMISSIONS else None
         decision = "deny"
@@ -51,10 +57,36 @@ class ToolRegistry:
         except Exception as exc:
             raise ToolDenied("Tool execution denied") from exc
         if decision == "deny":
+            if confirmation_id is not None:
+                self._confirm(access, "reject", access.user_id, confirmation_id)
             raise ToolDenied("Tool execution denied")
-        if decision == "confirmation_required":
-            raise ConfirmationRequired(tool.name)
+        if permission == "sensitive" or confirmation_id is not None:
+            try:
+                canonical, _ = canonical_arguments(arguments)
+                frozen_arguments = json.loads(canonical)
+                if permission == "sensitive":
+                    validate_schema(frozen_arguments, tool.confirmation_schema)
+            except ValueError:
+                self._confirm(access, "reject", access.user_id, confirmation_id)
+            if confirmation_id is not None:
+                consumed = self._confirm(access, "consume", access.user_id, confirmation_id,
+                                         name, permission, frozen_arguments, session_id)
+                # Execute exactly the persisted arguments whose digest was approved.
+                arguments = consumed["arguments"]
+            elif decision == "confirmation_required":
+                confirmation = self._confirm(access, "create", access.user_id, name, permission, frozen_arguments,
+                                             session_id=session_id, ttl=self.confirmation_ttl_seconds, new_session=new_session)
+                raise ConfirmationRequired(confirmation)
         try:
             return tool.handler(dict(arguments))
         except Exception as exc:
             raise ValueError("Tool execution failed; actions may have completed. Do not retry automatically.") from exc
+
+    @staticmethod
+    def _confirm(access, operation, *args, **kwargs):
+        try:
+            return getattr(access.store.confirmations, operation)(*args, **kwargs)
+        except ConfirmationRejected:
+            raise
+        except Exception as exc:
+            raise ConfirmationRejected() from exc

@@ -75,6 +75,15 @@ class SecurityStore:
                 "decision TEXT NOT NULL CHECK(decision IN ('allow','deny','confirmation_required')))"
             )
 
+        # Additive migration: preserve all block 4 audit rows and decision values.
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(security_audit)")}
+        with connection:
+            for column in ("event", "confirmation_id"):
+                if column not in columns:
+                    connection.execute(f"ALTER TABLE security_audit ADD COLUMN {column} TEXT")
+        from security.confirmations import ConfirmationStore
+        self.confirmations = ConfirmationStore(self)
+
     def create_user(self, user_id: str | None = None) -> User:
         # Explicit IDs allow a local administrator to adopt verified legacy sessions.
         user_id = str(uuid4()) if user_id is None else validate_id(user_id, "user_id")
@@ -155,10 +164,14 @@ class SecurityStore:
             (user_id, tool, permission),
         ).fetchone() is not None
 
+    def _audit_in_transaction(self, user_id, tool, permission, decision, event=None, confirmation_id=None):
+        self._connection.execute(
+            "INSERT INTO security_audit(timestamp, user_id, tool, requested_permission, decision, event, confirmation_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (utc_now(), user_id, tool, permission, decision, event, confirmation_id),
+        )
+
     def audit(self, user_id: str, tool: str, permission: str | None, decision: str) -> None:
-        # Callers supply registered metadata only, never arguments, tokens or request text.
+        # Never arguments, tokens or request text. Lifecycle events share this table.
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO security_audit(timestamp, user_id, tool, requested_permission, decision) "
-                "VALUES (?, ?, ?, ?, ?)", (utc_now(), user_id, tool, permission, decision),
-            )
+            self._audit_in_transaction(user_id, tool, permission, decision)

@@ -1,4 +1,5 @@
 from assistant.history import HistoryPolicy
+from security.confirmations import ConfirmationRejected
 from memory.sessions import SessionStore
 from assistant.dialogue import DialogueHandler
 from assistant.providers import AIProvider
@@ -38,6 +39,14 @@ class Assistant:
                     raise IdentityError()
                 if request.action == "dialogue":
                     p = {**p, "user_id": self.access.user_id}
+            if request.action in ("confirmation.get", "confirmation.approve", "confirmation.cancel"):
+                if self.access is None:
+                    raise AuthenticationError()
+                if set(p) != {"confirmation_id"}:
+                    raise ValueError("Expected confirmation_id only")
+                operation = request.action.split(".")[1]
+                result = self.tools._confirm(self.access, operation, self.access.user_id, p["confirmation_id"])
+                return Response(True, result)
             if request.action == "dialogue":
                 return Response(True, self.dialogue.handle(p))
             if request.action == "ping":
@@ -55,10 +64,18 @@ class Assistant:
                 arguments = p.get("arguments", {})
                 if not isinstance(arguments, dict):
                     raise ValueError("arguments must be an object")
-                return Response(True, self.tools.execute(name, arguments, access=self.access))
+                if "confirmation_id" in p and not isinstance(p["confirmation_id"], str):
+                    raise ConfirmationRejected()
+                return Response(True, self.tools.execute(
+                    name, arguments, access=self.access, confirmation_id=p.get("confirmation_id"),
+                    session_id=p.get("session_id"),
+                ))
             return Response(False, error="Unknown action")
         except ConfirmationRequired as exc:
-            return Response(True, {"status": "confirmation_required", "tool": exc.tool, "permission": "sensitive"})
+            confirmation = exc.confirmation
+            return Response(True, {"status": "confirmation_required", "tool": exc.tool, "permission": "sensitive",
+                                   "confirmation_id": confirmation["confirmation_id"], "session_id": confirmation["session_id"],
+                                   "expires_at": confirmation["expires_at"]})
         except ValueError as exc:
             return Response(False, error=str(exc))
 
