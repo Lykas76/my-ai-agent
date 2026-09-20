@@ -54,6 +54,8 @@ def make_handler(assistant: Assistant):
                     return
                 payload = json.loads(self.rfile.read(length))
                 request = Request.from_dict(payload)
+                if request.action == "dialogue":
+                    request = Request(request.action, {"user_id": "local", **request.parameters})
             except (ValueError, UnicodeError, OSError):
                 self.reply(400, {"error": "Invalid request body"})
                 return
@@ -69,7 +71,7 @@ def make_handler(assistant: Assistant):
 def main():
     settings = Settings.from_env()
     with SQLiteMemory(settings.database_path) as memory:
-        assistant = Assistant(memory, ToolRegistry())
+        assistant = Assistant(memory, ToolRegistry(), history_policy=settings.history_policy)
         with HTTPServer(("127.0.0.1", settings.port), make_handler(assistant)) as server:
             print(f"Local API: http://127.0.0.1:{settings.port}")
             try:

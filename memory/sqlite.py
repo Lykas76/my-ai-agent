@@ -1,5 +1,6 @@
 import heapq
 from memory.search import MemoryEntry, tokens
+from memory.sessions import SQLiteSessionStore
 import sqlite3
 from pathlib import Path
 
@@ -15,6 +16,7 @@ class SQLiteMemory:
             "CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         self._connection.commit()
+        self.sessions = SQLiteSessionStore(self._connection)
 
     def put(self, key: str, value: str) -> None:
         with self._connection:

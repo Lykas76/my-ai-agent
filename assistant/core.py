@@ -1,3 +1,5 @@
+from assistant.history import HistoryPolicy
+from memory.sessions import SessionStore
 from assistant.dialogue import DialogueHandler
 from assistant.providers import AIProvider
 from assistant.models import Request, Response
@@ -6,10 +8,11 @@ from tools.registry import ToolRegistry
 
 
 class Assistant:
-    def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None):
+    def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None,
+                 *, sessions: SessionStore | None = None, history_policy: HistoryPolicy | None = None):
         self.memory = memory
         self.tools = tools
-        self.dialogue = DialogueHandler(memory, tools, provider)
+        self.dialogue = DialogueHandler(memory, tools, provider, sessions=sessions, history_policy=history_policy)
 
     def handle(self, request: Request) -> Response:
         try:

@@ -2,8 +2,10 @@
 from dataclasses import asdict, dataclass
 
 from assistant.intent import Intent, IntentDetector
+from assistant.history import HistoryPolicy
 from assistant.providers import AIProvider, LocalProvider, Message, ProviderRequest, ToolResult
 from memory.base import Memory
+from memory.sessions import SessionError, SessionStore, StoredMessage, validate_id
 from memory.search import MemoryEntry, SearchableMemory
 from tools.registry import ToolDenied, ToolRegistry
 
@@ -28,18 +30,42 @@ class DialogueResponse:
 
 
 class DialogueHandler:
-    def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None):
+    def __init__(self, memory: Memory, tools: ToolRegistry, provider: AIProvider | None = None,
+                 *, sessions: SessionStore | None = None, history_policy: HistoryPolicy | None = None):
         self.memory = memory
         self.tools = tools
         self.provider = provider if provider is not None else LocalProvider()
         self.detector = IntentDetector()
+        self.sessions = sessions if sessions is not None else getattr(memory, "sessions", None)
+        self.history_policy = history_policy if history_policy is not None else HistoryPolicy()
 
     def handle(self, parameters: dict) -> dict:
-        if not isinstance(parameters, dict) or set(parameters) - {"message", "history"}:
-            raise ValueError("Expected message and optional history")
+        if not isinstance(parameters, dict) or set(parameters) - {"message", "history", "user_id", "session_id"}:
+            raise ValueError("Expected message, optional history, user_id and session_id")
         message = self._text(parameters.get("message"))
         history = self._history(parameters.get("history", []))
         decision = self.detector.detect(message)
+        persistent = "user_id" in parameters or "session_id" in parameters
+        user_id = session_id = None
+        if persistent:
+            user_id = validate_id(parameters.get("user_id", "local"), "user_id")
+            if "session_id" in parameters:
+                session_id = validate_id(parameters["session_id"], "session_id")
+            if self.sessions is None:
+                raise DialogueError("Session storage is not available")
+            if session_id is not None and history:
+                raise ValueError("Existing sessions use stored history; omit explicit history")
+            try:
+                if session_id is not None:
+                    rows = self.sessions.recent_messages(user_id, session_id, self.history_policy.candidate_messages)
+                else:
+                    # Legacy client-supplied history is transient context for a new session.
+                    rows = [StoredMessage(i, item.role, item.content, "") for i, item in enumerate(history)]
+                history = self.history_policy.select(rows, message)
+            except SessionError:
+                raise
+            except Exception as exc:
+                raise DialogueError("History retrieval failed") from exc
         context = ()
         # A greeting or tool invocation does not need to disclose stored memories.
         if decision.intent in {Intent.CHAT, Intent.RECALL} and isinstance(self.memory, SearchableMemory):
@@ -71,7 +97,17 @@ class DialogueHandler:
         except Exception as exc:
             detail = "Provider failed after tool execution; do not retry automatically" if result else "Provider failed"
             raise DialogueError(detail) from exc
-        return asdict(DialogueResponse(reply, decision.intent.value, tuple(entry.key for entry in context), result.name if result else None))
+        response = asdict(DialogueResponse(
+            reply, decision.intent.value, tuple(entry.key for entry in context), result.name if result else None
+        ))
+        if persistent:
+            try:
+                session = self.sessions.save_turn(user_id, session_id, message, reply)
+            except Exception as exc:
+                raise DialogueError("History storage failed; actions may have completed. Do not retry automatically.") from exc
+            response.update(user_id=session.user_id, session_id=session.session_id,
+                            created_at=session.created_at, updated_at=session.updated_at)
+        return response
 
     @staticmethod
     def _text(value):
