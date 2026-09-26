@@ -28,6 +28,23 @@ GMAIL_RESULT_TOOLS = {
 }
 GMAIL_LAST_RESULTS_KEY = "gmail.last_results"
 
+POST_TOOL_OFFER_PREFIXES = (
+    "\u0445\u043e\u0442\u0438\u0442\u0435",
+    "\u0435\u0441\u043b\u0438 \u0445\u043e\u0442\u0438\u0442\u0435",
+    "\u0435\u0441\u043b\u0438 \u043d\u0443\u0436\u043d\u043e",
+    "\u0435\u0441\u043b\u0438 \u043d\u0435\u043e\u0431\u0445\u043e\u0434\u0438\u043c\u043e",
+    "\u043c\u043e\u0433\u0443 ",
+    "\u043c\u043e\u0433\u0443 \u0442\u0430\u043a\u0436\u0435",
+    "\u043c\u043e\u0433\u0443 \u0435\u0449\u0435",
+    "\u0441\u043a\u0430\u0436\u0438\u0442\u0435, \u0435\u0441\u043b\u0438",
+    "\u043f\u0440\u0438 \u0436\u0435\u043b\u0430\u043d\u0438\u0438",
+    "would you like",
+    "if you want",
+    "if you'd like",
+    "i can ",
+    "let me know if",
+)
+
 
 class DialogueError(ValueError):
     """A safe public error message for a failed dialogue turn."""
@@ -124,6 +141,8 @@ class DialogueHandler:
                 raise
             except Exception as exc:
                 raise DialogueError("Tool execution failed; it may have produced side effects. Do not retry automatically.") from exc
+        tool_result_before_provider = result is not None
+
         request = ProviderRequest(message, decision.intent, context, history, result, self.tools.definitions(self.access))
         try:
             reply = self.provider.generate(request)
@@ -145,6 +164,10 @@ class DialogueHandler:
                     reply = reply.text
             if not isinstance(reply, str) or not reply.strip() or len(reply) > 8000:
                 raise TypeError("Provider must return bounded nonempty text")
+
+            if tool_result_before_provider:
+                reply = self._strip_post_tool_offer(reply)
+
             reject_credentials(reply)
         except (ToolDenied, ConfirmationRequired, ConfirmationRejected):
             raise
@@ -184,6 +207,32 @@ class DialogueHandler:
                 updated_at=session.updated_at,
             )
         return response
+
+    @staticmethod
+    def _strip_post_tool_offer(reply: str) -> str:
+        value = reply.strip()
+        paragraphs = re.split(r"\n\s*\n", value)
+
+        while len(paragraphs) > 1:
+            tail = paragraphs[-1].strip()
+            normalized = tail.casefold().lstrip("#*- \\t")
+
+            if any(
+                normalized.startswith(prefix)
+                for prefix in POST_TOOL_OFFER_PREFIXES
+            ):
+                paragraphs.pop()
+                continue
+
+            break
+
+        cleaned = "\n\n".join(
+            part.strip()
+            for part in paragraphs
+            if part.strip()
+        ).strip()
+
+        return cleaned or value
 
     def _gmail_followup_decision(
         self,
