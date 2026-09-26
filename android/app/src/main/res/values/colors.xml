@@ -1,0 +1,26 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#070A12</color>
+    <color name="surface">#101522</color>
+    <color name="surface_alt">#171D2D</color>
+    <color name="surface_soft">#1D2435</color>
+
+    <color name="primary">#8B5CF6</color>
+    <color name="primary_dark">#6D28D9</color>
+    <color name="primary_soft">#312E81</color>
+
+    <color name="text_primary">#F8FAFC</color>
+    <color name="text_secondary">#A7B0C0</color>
+    <color name="text_muted">#6B7280</color>
+
+    <color name="success">#22C55E</color>
+    <color name="warning">#F59E0B</color>
+    <color name="danger">#EF4444</color>
+
+    <color name="border">#283044</color>
+    <color name="input_bg">#0D1320</color>
+    <color name="nav_bg">#0B101B</color>
+
+    <color name="message_user">#6D28D9</color>
+    <color name="message_assistant">#151B29</color>
+</resources>

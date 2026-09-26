@@ -223,3 +223,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Android local SDK/build state and private backups
+.gradle/
+.idea/
+local.properties
+*.jks
+*.keystore
+backups/
+
+# Google OAuth / Gmail secrets
+client_secret*.json
+credentials*.json
+oauth*.json
+google_oauth*.json
+token*.json
+google-services.json
+service-account*.json
+
+# Local secrets
+
+
+# Local development backups and test databases
+*.bak
+*.bak-*
+*.db
+notification-check.txt
+/data/assistant.sqlite3
+/data/backups/

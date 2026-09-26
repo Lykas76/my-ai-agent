@@ -1,4 +1,5 @@
 from assistant.history import HistoryPolicy
+from runtime.credentials import reject_credentials
 from security.confirmations import ConfirmationRejected
 from memory.sessions import SessionStore
 from assistant.dialogue import DialogueHandler
@@ -54,12 +55,17 @@ class Assistant:
             if request.action in {"memory.put", "memory.get", "memory.delete"}:
                 key = self._text(p, "key")
                 if request.action == "memory.put":
-                    self.memory.put(key, self._text(p, "value"))
+                    value = self._text(p, "value")
+                    reject_credentials(key)
+                    reject_credentials(value)
+                    self.memory.put(key, value)
                     return Response(True, "saved")
                 if request.action == "memory.get":
                     return Response(True, self.memory.get(key))
                 return Response(True, self.memory.delete(key))
             if request.action == "tool.run":
+                if set(p) - {"name", "arguments", "confirmation_id", "session_id", "user_id"}:
+                    raise ValueError("Invalid tool request fields")
                 name = self._text(p, "name")
                 arguments = p.get("arguments", {})
                 if not isinstance(arguments, dict):

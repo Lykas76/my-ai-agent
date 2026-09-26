@@ -544,3 +544,25 @@ python -B -m unittest discover -s tests -v
 восстановление после открытия базы, аудит и запрет выполнения до approve.
 Реальные опасные инструменты не добавлены. Следующий этап — отдельный журнал
 результатов действий, сверка последствий после сбоев и идемпотентность внешних адаптеров.
+
+## Local MVP: Android, Telegram, automations
+
+The repository now includes an opt-in OpenAI-compatible provider, typed built-in
+tools, isolated local notes and reminder inbox, persistent scheduler, API v1,
+Telegram client and an Android skeleton. Block 5 confirmation semantics are preserved.
+
+Start with [Windows setup](docs/WINDOWS.md), [API v1 contract](docs/API.md),
+[architecture and limitations](docs/ARCHITECTURE.md), and [Android build steps](android/README.md).
+Default execution remains offline. Google/web/Android-action/Telegram-send tools are
+not_connected stubs. No real credentials are included and no live external actions
+were run. Android is the primary UI; Telegram is an additional channel.
+
+Backend: python -B -m api.server. Scheduler: python -B -m scheduler.worker.
+Telegram is opt-in: python -m clients.telegram after private setup.
+API v1 provides login/token rotation, chat, sessions/history, confirmations,
+tasks/reminders and health/readiness. All data routes require authentication.
+
+Protocol references:
+- [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat)
+- [Telegram Bot API](https://core.telegram.org/bots/api)
+- [python-telegram-bot](https://docs.python-telegram-bot.org/en/stable/telegram.bot.html)

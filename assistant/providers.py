@@ -4,6 +4,7 @@ from typing import Protocol
 
 from assistant.intent import Intent
 from memory.search import MemoryEntry
+from tools.registry import ToolResult
 
 
 @dataclass(frozen=True)
@@ -13,9 +14,15 @@ class Message:
 
 
 @dataclass(frozen=True)
-class ToolResult:
+class StructuredToolRequest:
     name: str
-    value: str
+    arguments: dict
+
+
+@dataclass(frozen=True)
+class ProviderResponse:
+    text: str = ""
+    tool_call: StructuredToolRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -25,10 +32,11 @@ class ProviderRequest:
     context: tuple[MemoryEntry, ...] = ()
     history: tuple[Message, ...] = ()
     tool_result: ToolResult | None = None
+    tools: tuple[dict, ...] = ()
 
 
 class AIProvider(Protocol):
-    def generate(self, request: ProviderRequest) -> str: ...
+    def generate(self, request: ProviderRequest) -> str | ProviderResponse: ...
 
 
 class LocalProvider:

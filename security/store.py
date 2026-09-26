@@ -6,6 +6,8 @@ import secrets
 import sqlite3
 from dataclasses import dataclass, field
 from uuid import uuid4
+from datetime import datetime, timedelta, timezone
+from runtime.migrations import migrate
 
 from memory.sessions import utc_now, validate_id
 
@@ -76,11 +78,17 @@ class SecurityStore:
             )
 
         # Additive migration: preserve all block 4 audit rows and decision values.
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(security_audit)")}
-        with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(security_audit)")}
             for column in ("event", "confirmation_id"):
                 if column not in columns:
                     connection.execute(f"ALTER TABLE security_audit ADD COLUMN {column} TEXT")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        migrate(connection)
         from security.confirmations import ConfirmationStore
         self.confirmations = ConfirmationStore(self)
 
@@ -108,19 +116,40 @@ class SecurityStore:
             if cursor.rowcount != 1:
                 raise ValueError("User not found")
 
-    def issue_token(self, user_id: str) -> IssuedToken:
+    def issue_token(self, user_id: str, ttl_seconds: int = 2592000) -> IssuedToken:
+        if type(ttl_seconds) is not int or not 60 <= ttl_seconds <= 2592000:
+            raise ValueError('Token TTL must be 60..2592000 seconds')
         user = self.get_user(user_id)
         if user is None or user.status != "active":
             raise ValueError("Active user required")
         token_id = uuid4().hex
         raw = token_id + "." + secrets.token_urlsafe(32)
         digest = hashlib.sha256(raw.encode("ascii")).hexdigest()
+        expiry = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
         with self._connection:
             self._connection.execute(
-                "INSERT INTO api_tokens(token_id, user_id, token_hash, created_at) VALUES (?, ?, ?, ?)",
-                (token_id, user_id, digest, utc_now()),
+                "INSERT INTO api_tokens(token_id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (token_id, user_id, digest, utc_now(), expiry),
             )
         return IssuedToken(user_id, token_id, raw)
+
+    def rotate_token(self, token: str) -> IssuedToken:
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            user = self.authenticate(token)  # recheck under write lock, rejecting concurrent replay
+            token_id = uuid4().hex
+            raw = token_id + "." + secrets.token_urlsafe(32)
+            digest = hashlib.sha256(raw.encode("ascii")).hexdigest()
+            expiry = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+            self._connection.execute(
+                "INSERT INTO api_tokens(token_id,user_id,token_hash,created_at,expires_at) VALUES(?,?,?,?,?)",
+                (token_id,user.user_id,digest,utc_now(),expiry))
+            self._connection.execute("UPDATE api_tokens SET revoked=1 WHERE token_id=?", (token[:32],))
+            self._connection.commit()
+            return IssuedToken(user.user_id,token_id,raw)
+        except BaseException:
+            self._connection.rollback()
+            raise
 
     def revoke_token(self, token_id: str) -> None:
         with self._connection:
@@ -130,12 +159,13 @@ class SecurityStore:
         if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}\.[A-Za-z0-9_-]{43}", token):
             raise AuthenticationError()
         row = self._connection.execute(
-            "SELECT u.user_id, u.status, u.created_at, u.updated_at, t.token_hash, t.revoked "
+            "SELECT u.user_id, u.status, u.created_at, u.updated_at, t.token_hash, t.revoked, t.expires_at "
             "FROM api_tokens t JOIN users u ON u.user_id=t.user_id WHERE t.token_id=?", (token[:32],)
         ).fetchone()
         digest = hashlib.sha256(token.encode("ascii")).hexdigest()
         valid = hmac.compare_digest(digest, row[4] if row else "0" * 64)
-        if not valid or row is None or row[5] or row[1] != "active":
+        if (not valid or row is None or row[5] or row[1] != "active" or not row[6]
+                or datetime.fromisoformat(row[6]) <= datetime.now(timezone.utc)):
             raise AuthenticationError()
         return User(*row[:4])
 

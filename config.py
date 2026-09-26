@@ -24,6 +24,12 @@ class Settings:
 
     @classmethod
     def from_env(cls):
+        mode = os.getenv("ASSISTANT_PROVIDER") or "local"
+        if mode not in ("local", "openai"):
+            raise ValueError("Invalid provider configuration")
+        rate = int(os.getenv("ASSISTANT_RATE_LIMIT") or 60)
+        if not 1 <= rate <= 6000:
+            raise ValueError("Rate limit must be 1..6000")
         port = int(os.getenv("ASSISTANT_PORT") or "8000")
         if not 1 <= port <= 65535:
             raise ValueError("ASSISTANT_PORT must be between 1 and 65535")

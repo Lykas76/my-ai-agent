@@ -3,13 +3,14 @@ from dataclasses import asdict, dataclass
 
 from assistant.intent import Intent, IntentDetector
 from assistant.history import HistoryPolicy
-from assistant.providers import AIProvider, LocalProvider, Message, ProviderRequest, ToolResult
+from assistant.providers import AIProvider, LocalProvider, Message, ProviderRequest, ToolResult, ProviderResponse
 from memory.base import Memory
 from memory.sessions import SessionError, SessionStore, StoredMessage, validate_id
 from memory.search import MemoryEntry, SearchableMemory
 from tools.registry import ConfirmationRequired, ToolDenied, ToolRegistry
 from security.store import AccessContext
 from security.confirmations import ConfirmationRejected
+from runtime.credentials import reject_credentials
 
 MAX_MESSAGE = 4000
 MAX_HISTORY = 20
@@ -97,11 +98,26 @@ class DialogueHandler:
                 raise
             except Exception as exc:
                 raise DialogueError("Tool execution failed; it may have produced side effects. Do not retry automatically.") from exc
-        request = ProviderRequest(message, decision.intent, context, history, result)
+        request = ProviderRequest(message, decision.intent, context, history, result, self.tools.definitions(self.access))
         try:
             reply = self.provider.generate(request)
-            if not isinstance(reply, str) or not reply.strip():
-                raise TypeError("Provider must return nonempty text")
+            if isinstance(reply, ProviderResponse):
+                if reply.tool_call is not None:
+                    if result is not None:
+                        raise ValueError("Only one tool per turn")
+                    call = reply.tool_call
+                    value = self.tools.execute(call.name, call.arguments, access=self.access,
+                                               session_id=session_id, new_session=persistent and session_id is None)
+                    result = ToolResult(call.name, value[:MAX_TOOL_RESULT])
+                    # Bounded one-call workflow; no second model execution or automatic retry.
+                    reply = result.value
+                else:
+                    reply = reply.text
+            if not isinstance(reply, str) or not reply.strip() or len(reply) > 8000:
+                raise TypeError("Provider must return bounded nonempty text")
+            reject_credentials(reply)
+        except (ToolDenied, ConfirmationRequired, ConfirmationRejected):
+            raise
         except Exception as exc:
             detail = "Provider failed after tool execution; do not retry automatically" if result else "Provider failed"
             raise DialogueError(detail) from exc
@@ -121,6 +137,7 @@ class DialogueHandler:
     def _text(value):
         if not isinstance(value, str) or not value.strip() or len(value) > MAX_MESSAGE:
             raise ValueError("Message must contain 1..4000 characters and cannot be blank")
+        reject_credentials(value)
         return value.strip()
 
     @classmethod
