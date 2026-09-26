@@ -219,6 +219,197 @@ class SessionStorageTests(unittest.TestCase):
             self.assertEqual(memory._connection.execute('SELECT count(*) FROM sessions').fetchone()[0], 1)
 
 
+class SessionStateTests(unittest.TestCase):
+    def test_set_get_update_and_delete_state(self):
+        with SQLiteMemory(":memory:") as memory:
+            store = memory.sessions
+            session = store.create_session("alice")
+
+            self.assertIsNone(
+                store.get_state("alice", session.session_id, "gmail.last_results")
+            )
+
+            store.set_state(
+                "alice",
+                session.session_id,
+                "gmail.last_results",
+                "first",
+            )
+
+            self.assertEqual(
+                store.get_state(
+                    "alice",
+                    session.session_id,
+                    "gmail.last_results",
+                ),
+                "first",
+            )
+
+            store.set_state(
+                "alice",
+                session.session_id,
+                "gmail.last_results",
+                "second",
+            )
+
+            self.assertEqual(
+                store.get_state(
+                    "alice",
+                    session.session_id,
+                    "gmail.last_results",
+                ),
+                "second",
+            )
+
+            self.assertTrue(
+                store.delete_state(
+                    "alice",
+                    session.session_id,
+                    "gmail.last_results",
+                )
+            )
+
+            self.assertIsNone(
+                store.get_state(
+                    "alice",
+                    session.session_id,
+                    "gmail.last_results",
+                )
+            )
+
+            self.assertFalse(
+                store.delete_state(
+                    "alice",
+                    session.session_id,
+                    "gmail.last_results",
+                )
+            )
+
+    def test_state_is_isolated_by_user_and_session(self):
+        with SQLiteMemory(":memory:") as memory:
+            store = memory.sessions
+
+            alice_one = store.create_session("alice")
+            alice_two = store.create_session("alice")
+            bob = store.create_session("bob")
+
+            store.set_state(
+                "alice",
+                alice_one.session_id,
+                "gmail.last_results",
+                "alice-one",
+            )
+
+            self.assertEqual(
+                store.get_state(
+                    "alice",
+                    alice_one.session_id,
+                    "gmail.last_results",
+                ),
+                "alice-one",
+            )
+
+            self.assertIsNone(
+                store.get_state(
+                    "alice",
+                    alice_two.session_id,
+                    "gmail.last_results",
+                )
+            )
+
+            self.assertIsNone(
+                store.get_state(
+                    "bob",
+                    bob.session_id,
+                    "gmail.last_results",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                SessionError,
+                "Session not found",
+            ):
+                store.get_state(
+                    "bob",
+                    alice_one.session_id,
+                    "gmail.last_results",
+                )
+
+            with self.assertRaisesRegex(
+                SessionError,
+                "Session not found",
+            ):
+                store.set_state(
+                    "bob",
+                    alice_one.session_id,
+                    "gmail.last_results",
+                    "forbidden",
+                )
+
+    def test_state_survives_database_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "assistant.sqlite3")
+
+            with SQLiteMemory(path) as memory:
+                session = memory.sessions.create_session("alice")
+
+                memory.sessions.set_state(
+                    "alice",
+                    session.session_id,
+                    "gmail.last_results",
+                    "persistent-value",
+                )
+
+                session_id = session.session_id
+
+            with SQLiteMemory(path) as memory:
+                self.assertEqual(
+                    memory.sessions.get_state(
+                        "alice",
+                        session_id,
+                        "gmail.last_results",
+                    ),
+                    "persistent-value",
+                )
+
+    def test_state_validation(self):
+        with SQLiteMemory(":memory:") as memory:
+            store = memory.sessions
+            session = store.create_session("alice")
+
+            for key in (
+                "",
+                " bad",
+                "../bad",
+                "bad/key",
+                "x" * 65,
+                "\u043a\u043b\u044e\u0447",
+            ):
+                with self.subTest(key=key):
+                    with self.assertRaises(ValueError):
+                        store.set_state(
+                            "alice",
+                            session.session_id,
+                            key,
+                            "value",
+                        )
+
+            for value in (
+                "",
+                123,
+                None,
+                "x" * 16001,
+            ):
+                with self.subTest(value_type=type(value).__name__):
+                    with self.assertRaises(ValueError):
+                        store.set_state(
+                            "alice",
+                            session.session_id,
+                            "gmail.last_results",
+                            value,
+                        )
+
+
 class HistoryPolicyTests(unittest.TestCase):
     def test_relevance_latest_exchange_and_chronological_order(self):
         rows = [StoredMessage(i, 'user' if i % 2 == 0 else 'assistant', text, '')

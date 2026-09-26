@@ -42,6 +42,9 @@ class SessionStore(Protocol):
     def get_session(self, user_id: str, session_id: str) -> Session: ...
     def recent_messages(self, user_id: str, session_id: str, limit: int = 100) -> list[StoredMessage]: ...
     def save_turn(self, user_id: str, session_id: str | None, message: str, reply: str) -> Session: ...
+    def get_state(self, user_id: str, session_id: str, key: str) -> str | None: ...
+    def set_state(self, user_id: str, session_id: str, key: str, value: str) -> None: ...
+    def delete_state(self, user_id: str, session_id: str, key: str) -> bool: ...
 
 
 class SQLiteSessionStore:
@@ -68,6 +71,14 @@ class SQLiteSessionStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS session_messages_scope "
                 "ON session_messages(user_id, session_id, message_id)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS session_state ("
+                "user_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+                "key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                "PRIMARY KEY (user_id, session_id, key), "
+                "FOREIGN KEY (user_id, session_id) "
+                "REFERENCES sessions(user_id, session_id) ON DELETE CASCADE)"
             )
 
     def _insert_session(self, user_id: str) -> Session:
@@ -105,6 +116,53 @@ class SQLiteSessionStore:
             (user_id, session_id, limit),
         ).fetchall()
         return [StoredMessage(*row) for row in reversed(rows)]
+
+    @staticmethod
+    def _state_key(key: str) -> str:
+        if not isinstance(key, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", key
+        ):
+            raise ValueError("State key must be 1..64 safe ASCII characters")
+        return key
+
+    def get_state(self, user_id: str, session_id: str, key: str) -> str | None:
+        self.get_session(user_id, session_id)
+        key = self._state_key(key)
+        row = self._connection.execute(
+            "SELECT value FROM session_state "
+            "WHERE user_id = ? AND session_id = ? AND key = ?",
+            (user_id, session_id, key),
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_state(self, user_id: str, session_id: str, key: str, value: str) -> None:
+        self.get_session(user_id, session_id)
+        key = self._state_key(key)
+
+        if not isinstance(value, str) or not value or len(value) > 16000:
+            raise ValueError("State value must contain 1..16000 characters")
+
+        now = utc_now()
+
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO session_state(user_id, session_id, key, value, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(user_id, session_id, key) "
+                "DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (user_id, session_id, key, value, now),
+            )
+
+    def delete_state(self, user_id: str, session_id: str, key: str) -> bool:
+        self.get_session(user_id, session_id)
+        key = self._state_key(key)
+
+        with self._connection:
+            return self._connection.execute(
+                "DELETE FROM session_state "
+                "WHERE user_id = ? AND session_id = ? AND key = ?",
+                (user_id, session_id, key),
+            ).rowcount > 0
 
     def save_turn(self, user_id: str, session_id: str | None, message: str, reply: str) -> Session:
         validate_id(user_id, "user_id")
