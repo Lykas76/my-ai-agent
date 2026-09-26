@@ -32,6 +32,70 @@ def _requested_count(text: str, default: int = 10) -> int:
     return default
 
 
+def _gmail_search_value(value: str) -> str:
+    value = value.strip(" .!?\"'??")
+    value = value.replace('"', "")
+    if not value:
+        return ""
+    return f'"{value}"' if " " in value else value
+
+
+def _gmail_search_route(normalized: str, count: int) -> ToolCall | None:
+    # Russian: "... ?? Google"
+    sender = re.search(
+        r"(?:^|\s)\u043e\u0442\s+(.+)$",
+        normalized,
+    )
+    if sender:
+        value = _gmail_search_value(sender.group(1))
+        if value:
+            return ToolCall(
+                "gmail.search",
+                {
+                    "query": f"from:{value}",
+                    "max_results": count,
+                },
+            )
+
+    # Russian: "... ? ????? Security alert" / "... ???? Security alert"
+    subject = re.search(
+        r"(?:\u0441\s+\u0442\u0435\u043c\u043e\u0439|\u0442\u0435\u043c\u0430)\s+(.+)$",
+        normalized,
+    )
+    if subject:
+        value = _gmail_search_value(subject.group(1))
+        if value:
+            return ToolCall(
+                "gmail.search",
+                {
+                    "query": f"subject:{value}",
+                    "max_results": count,
+                },
+            )
+
+    # Russian: "????? ? ????? Railway"
+    prefixes = (
+        "\u043f\u043e\u0438\u0449\u0438 \u0432 \u043f\u043e\u0447\u0442\u0435 ",
+        "\u043d\u0430\u0439\u0434\u0438 \u0432 \u043f\u043e\u0447\u0442\u0435 ",
+        "search mail for ",
+        "search email for ",
+    )
+
+    for prefix in prefixes:
+        if normalized.startswith(prefix):
+            value = normalized[len(prefix):].strip()
+            if value:
+                return ToolCall(
+                    "gmail.search",
+                    {
+                        "query": value,
+                        "max_results": count,
+                    },
+                )
+
+    return None
+
+
 def _gmail_readonly_route(normalized: str) -> ToolCall | None:
     mail_terms = (
         "\u043f\u0438\u0441\u044c\u043c",
@@ -47,6 +111,10 @@ def _gmail_readonly_route(normalized: str) -> ToolCall | None:
         return None
 
     count = _requested_count(normalized)
+
+    search_call = _gmail_search_route(normalized, count)
+    if search_call is not None:
+        return search_call
 
     unread_terms = (
         "\u043d\u0435\u043f\u0440\u043e\u0447\u0438\u0442\u0430\u043d",
@@ -136,6 +204,14 @@ class IntentDetector:
         if normalized in greetings:
             return IntentDecision(Intent.GREETING)
 
+        gmail_call = _gmail_readonly_route(normalized)
+
+        if gmail_call is not None:
+            return IntentDecision(
+                Intent.TOOL,
+                gmail_call,
+            )
+
         recall_prefixes = (
             "\u0432\u0441\u043f\u043e\u043c\u043d\u0438",
             "\u043d\u0430\u0439\u0434\u0438",
@@ -152,13 +228,5 @@ class IntentDetector:
             )
         ):
             return IntentDecision(Intent.RECALL)
-
-        gmail_call = _gmail_readonly_route(normalized)
-
-        if gmail_call is not None:
-            return IntentDecision(
-                Intent.TOOL,
-                gmail_call,
-            )
 
         return IntentDecision(Intent.CHAT)
