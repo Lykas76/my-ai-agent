@@ -297,6 +297,15 @@ class DialogueHandler:
                     position = number
                     break
 
+        if position is None:
+            last_terms = (
+                "\u043f\u043e\u0441\u043b\u0435\u0434\u043d",
+                "last",
+            )
+
+            if any(term in normalized for term in last_terms):
+                position = -1
+
         # This is not a positional Gmail follow-up.
         if position is None:
             return None
@@ -340,7 +349,10 @@ class DialogueHandler:
                 "Saved Gmail results are invalid"
             )
 
-        index = position - 1
+        if position == -1:
+            index = len(message_ids) - 1
+        else:
+            index = position - 1
 
         if index < 0 or index >= len(message_ids):
             raise DialogueError(

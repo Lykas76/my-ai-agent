@@ -474,3 +474,103 @@ def test_open_missing_gmail_result_is_rejected():
         assert not second.ok
         assert "not available" in second.error
         assert opened == []
+
+
+def test_open_last_gmail_result_uses_last_saved_message_id():
+    opened = []
+
+    with SQLiteMemory(":memory:") as memory:
+        registry = ToolRegistry()
+
+        registry.register(
+            Tool(
+                "gmail.search",
+                lambda args: json.dumps(
+                    [
+                        {"id": "msg-1"},
+                        {"id": "msg-2"},
+                        {"id": "msg-3"},
+                    ]
+                ),
+                permission="read",
+            ),
+            enabled=True,
+        )
+
+        registry.register(
+            Tool(
+                "gmail.get_message",
+                lambda args: (
+                    opened.append(dict(args))
+                    or json.dumps(
+                        {
+                            "id": args["message_id"],
+                            "subject": "Last message",
+                        }
+                    )
+                ),
+                permission="read",
+            ),
+            enabled=True,
+        )
+
+        user = memory.security.create_user("alice")
+
+        memory.security.grant(
+            "alice",
+            "gmail.search",
+            "read",
+        )
+        memory.security.grant(
+            "alice",
+            "gmail.get_message",
+            "read",
+        )
+
+        assistant = Assistant(
+            memory,
+            registry,
+            Provider(),
+            access=AccessContext(
+                user.user_id,
+                memory.security,
+            ),
+        )
+
+        first = assistant.handle(
+            Request(
+                "dialogue",
+                {
+                    "user_id": "alice",
+                    "message": (
+                        "\u041d\u0430\u0439\u0434\u0438 "
+                        "\u043f\u0438\u0441\u044c\u043c\u0430 "
+                        "\u043e\u0442 Google"
+                    ),
+                },
+            )
+        )
+
+        assert first.ok, first.error
+
+        second = assistant.handle(
+            Request(
+                "dialogue",
+                {
+                    "user_id": "alice",
+                    "session_id": first.result["session_id"],
+                    "message": (
+                        "\u041e\u0442\u043a\u0440\u043e\u0439 "
+                        "\u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0435\u0435 "
+                        "\u043f\u0438\u0441\u044c\u043c\u043e"
+                    ),
+                },
+            )
+        )
+
+        assert second.ok, second.error
+        assert second.result["tool_used"] == "gmail.get_message"
+
+        assert opened == [
+            {"message_id": "msg-3"}
+        ]
