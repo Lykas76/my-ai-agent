@@ -1,3 +1,4 @@
+import json
 import secrets
 import time
 import unittest
@@ -27,6 +28,58 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(response.text,"reply")
         self.assertEqual(captured[0][1]["messages"][0]["role"],"system")
         self.assertEqual(captured[0][3],20)
+
+    def test_post_tool_context_lists_available_tools_without_second_tool_call(self):
+        captured = []
+
+        provider = self.provider(
+            lambda *args: (
+                captured.append(args)
+                or {"choices": [{"message": {"content": "summary"}}]}
+            )
+        )
+
+        request = ProviderRequest(
+            "show mail",
+            Intent.TOOL,
+            tool_result=ToolResult("gmail.list_unread", "[]"),
+            tools=(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "gmail.list_unread",
+                        "description": "List unread mail",
+                        "parameters": {"type": "object"},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "gmail.get_message",
+                        "description": "Read one message",
+                        "parameters": {"type": "object"},
+                    },
+                },
+            ),
+        )
+
+        response = provider.generate(request)
+
+        self.assertEqual(response.text, "summary")
+
+        payload = captured[0][1]
+        self.assertNotIn("tools", payload)
+
+        user_payload = json.loads(payload["messages"][-1]["content"])
+
+        self.assertEqual(
+            user_payload["available_tools"],
+            ["gmail.list_unread", "gmail.get_message"],
+        )
+        self.assertEqual(
+            user_payload["tool_result"],
+            "[]",
+        )
 
     def test_structured_call_requires_registered_definition(self):
         answer={"choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"tool_0","arguments":'{"key":"x"}'}}]}}]}
